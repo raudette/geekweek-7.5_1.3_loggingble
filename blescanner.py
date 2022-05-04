@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+#from distutils.util import execute
 from bluepy.btle import Scanner, DefaultDelegate, ScanEntry, Peripheral, UUID, Service, Characteristic, AssignedNumbers
 from enum import IntEnum
 from zeroconf import ServiceBrowser, Zeroconf
@@ -16,6 +17,11 @@ import logging
 import typing
 import time 
 import re
+import ast
+from pathlib import Path
+import sqlite3
+import fsspec
+
 # Get all ADV Types here 
 # https://www.bluetooth.com/specifications/assigned-numbers/generic-access-profile/
 # ScanEntry.AdvType
@@ -26,7 +32,6 @@ class BLEServicesUUIDs:
 
 class BLECharacteristicUUIDs: 
     deviceInformation_modelNumber =  UUID(0x2A24)
-
 
 class LogLevel(IntEnum): 
     ERR = 0
@@ -39,47 +44,22 @@ gl_log_level = LogLevel.INFO
 def DBG(*args, logLevel=LogLevel.INFO):
     if Debugging:
         if gl_log_level >= logLevel:
-            members = ['4c00']
-            serviceIds = ['feed', 'fd6f' ,'fD43' , 'fD44','fE14', 'FE25','9ffe']
             msg = " ".join([str(a) for a in args])
-            if "Encoding json" in msg:
-                # uuid = str(args[1]['manufacturerDataHex'])
-                # for i in members:
-                #         match = re.findall(r"^"+i,uuid)
-                #         if len(match) == 1:
-                #            print(msg)
-                #            break
-                # suuid = args[1]['serviceUUIDs']
-                # if len(suuid) > 0:
-                #     for j in serviceIds:
-                #         match = re.findall(r"^"+j,suuid[0])
-                #         if len(match) == 1:
-                #             print(msg)  
-                #             break
-                if 'serviceData16Bit' in args[1].keys():
-                     s16uuid = args[1]['serviceData16Bit']
-                     for j in serviceIds:
-                         match = re.findall(r"^"+j,s16uuid)
-                         if len(match) == 1:
-                            print(msg)           
-                
-            #else:
-            #    print(msg)
+         #   print(msg)
+        
+            
 
-# class BLERelayConf: 
 
-#     def _init_(self): 
-#         self.scanning = False 
-#         # If true the raspberry pi connects automatically to all devices that it can connect to 
-#         self.autoconnect = True 
-#         self.ble_timeout = 2.0 
-    
 class BLERelay( DefaultDelegate): 
 
     ########################
     ##  BLE SCANNING
     ########################
-    def _init_(self):
+    def __init__(self):
+        self.CONTAINER = "team1-3"
+       #   self.fs = fsspec.filesystem("abfs")
+        self.path = ""
+        self.path_db = "ble.sqlite"
         self.packets_sent = 0
         self.scanning = False
         self.scanner = None 
@@ -91,17 +71,39 @@ class BLERelay( DefaultDelegate):
         self.connected_scan_entry: ScanEntry = None 
         self.ble_timeout = 2.0 
         self.autoconnect = True
-        self.readable_services = [AssignedNumbers.device_information, AssignedNumbers.generic_access, AssignedNumbers.generic_attribute]
+        self.readable_services = [AssignedNumbers.device_information, AssignedNumbers.generic_access, AssignedNumbers.generic_attribute, 
+        AssignedNumbers.currentTimeService]
         # List of characteristics UUIDs that hav failed. Created dynamically such that they won't be read a second time 
         self.failing_characteristics: typing.List[UUID] = list()
-        DefaultDelegate._init_(self)
+        DefaultDelegate.__init__(self)
+    
+    def uploadDB(self):
+        return self.fs.put(str(self.path_db), self.path_blob(self.path_db))
+    
+    def getPath(self):
+        print("hello")
+        return self.fs.get(self.path_blob(self.path_db), self.path_db)
+
+    def path_blob(self):
+        return f"{self.CONTAINER}/{self.path}"
 
     def handleDiscovery(self, dev, isNewDev, isNewData):
         """
         A BLE signal has been received. The content is part of the dev parameter 
         """
-        self.relay_ble_advertisement(dev)
+        #Path(self.path_db).unlink(missing_ok=True)   
+        #self.uploadDB()
+        #self.getPath()
         
+        res = self.relay_ble_advertisement(dev)
+
+        with sqlite3.connect(self.path_db) as db: 
+            db.execute("CREATE TABLE IF NOT EXISTS logs(manufacturerDataHex, macAddress, rssi, timeStamp, tag)")
+            print(" Table created successfully") 
+            db.execute(
+                "INSERT INTO logs(manufacturerDataHex, macAddress, rssi, timeStamp, tag) VALUES (?,?,?,?,?)",
+                (res['manufacturerDataHex'] , res['macAddress'], res['rssi'], res['timeStamp'], res['tag'] )
+            )
 
 
     def start_ble_scanning(self): 
@@ -404,12 +406,6 @@ class BLERelay( DefaultDelegate):
         name = scanEntry.getValueText( ScanEntry.COMPLETE_LOCAL_NAME)
         if not name: 
             name = scanEntry.getValueText( ScanEntry.SHORT_LOCAL_NAME)
-        
-        # services_16 = scanEntry.getValueText(ScanEntry.INCOMPLETE_16B_SERVICES)
-        # services_32 = scanEntry.getValueText(ScanEntry.INCOMPLETE_32B_SERVICES)
-        # services_128 = scanEntry.getValueText(ScanEntry.INCOMPLETE_128B_SERVICES)
-        # print("Services 16B: \n\t{}\nServices 32B: \n\t{}\nServices 128B: \n\t{}".format(services_16, services_32 , services_128 ))
-        DBG("Raw Data: {}".format(scanEntry.rawData), logLevel=LogLevel.DEBUG)
         raw_data_hex = ""
         if scanEntry.rawData: 
             raw_data_hex = scanEntry.rawData.hex()
@@ -419,19 +415,15 @@ class BLERelay( DefaultDelegate):
             "macAddress": scanEntry.addr, 
             "rssi": scanEntry.rssi,
             "name": name, 
-            # "flags": scanEntry.getValueText( ScanEntry.FLAGS), 
-            #"addressType": scanEntry.addrType,
-            #"connectable": scanEntry.connectable, 
             "rawData": raw_data_hex,
-            #"timeStamp": strftime("%Y-%m-%d %H:%M:%S", gmtime()),
             "timeStamp": datetime.datetime.now().strftime("%m/%d/%Y, %H:%M:%S"),
-           # "serviceUUIDs"
-           # "scanData": {tag: scanEntry.getValueText(k) for k, tag in scanEntry.dataTags.items()},
+            "tag":"",
             }
          # Check for additional content in this advertisement 
 
         # Get service UUIDs 
         serviceUUIDs = list()
+    
         if scanEntry.getValueText(ScanEntry.INCOMPLETE_16B_SERVICES):
             serviceUUIDs.append(scanEntry.getValueText(ScanEntry.INCOMPLETE_16B_SERVICES))
 
@@ -463,13 +455,39 @@ class BLERelay( DefaultDelegate):
         if scanEntry.getValueText(ScanEntry.SERVICE_DATA_128B): 
             packet_content["serviceData128Bit"] = scanEntry.getValueText(ScanEntry.SERVICE_DATA_128B)
         
-        DBG("Encoding json: ", packet_content)
+        uuid = str(packet_content['manufacturerDataHex'])
+        suuid = str(packet_content['serviceUUIDs'])
+        members = ['4c001219']
+        serviceIds = ['0xfeed']
+        for i in members :
+             match = re.findall(r"^"+i,uuid)
+             if len(match) == 1:
+                DBG("Encoding json: ", packet_content)
+                packet_content['tag'] = "Apple"
+             else:
+                 packet_content['tag'] = "Other"
 
+        for j in serviceIds: 
+             match = re.findall(r"^"+i,suuid[0])
+             if len(match) == 1:
+                DBG("Encoding json: ", packet_content)
+                packet_content['tag'] = "Tile"
+             else:
+               packet_content['tag'] = "Other"
+        if 'serviceData16Bit' in packet_content.keys():
+                     s16uuid = packet_content['serviceData16Bit']
+                     for j in serviceIds:
+                         match = re.findall(r"^"+j,s16uuid)
+                         if len(match) == 1:
+                             DBG("Encoding json: ", packet_content)
+                         else:
+                             packet_content['tag'] = "Other"
 
         json_packet = json.dumps(packet_content).encode() 
         
         # Message type for advertisements is 0
         self.send_packet_over_socket(packet_type=0, packet_data=json_packet)
+        return packet_content
 
     def relay_discovered_services(self, device:  Peripheral, services:typing.List[ Service]):
         """
@@ -571,7 +589,7 @@ def syncMain():
     input("Cancel with CTRL-D")
 
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Relay BLE advertisements to network services")
     parser.add_argument("-a", dest="async_run", action='store_const', const=True, default=False, help="Pass -a to run asynchronous (useful for when running at startup)")
     parser.add_argument("-s", dest="scan_only", action='store_const', const=True, default=False, help="Pass -s to scan only without forwarding data")
@@ -581,8 +599,9 @@ if _name_ == "_main_":
         relay = BLERelay()
         relay.start_ble_scanning()
 
-
     if args.async_run: 
         asyncio.run(main())
     else: 
         syncMain()
+    
+
