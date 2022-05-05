@@ -98,11 +98,11 @@ class BLERelay( DefaultDelegate):
         res = self.relay_ble_advertisement(dev)
 
         with sqlite3.connect(self.path_db) as db: 
-            db.execute("CREATE TABLE IF NOT EXISTS logs(manufacturerDataHex, macAddress, rssi, timeStamp, tag)")
-            print(" Table created successfully") 
+            db.execute("CREATE TABLE IF NOT EXISTS logs(manufacturerDataHex, mac, rssi, timeStamp,tagtype)")
+            #print(" Table created successfully") 
             db.execute(
-                "INSERT INTO logs(manufacturerDataHex, macAddress, rssi, timeStamp, tag) VALUES (?,?,?,?,?)",
-                (res['manufacturerDataHex'] , res['macAddress'], res['rssi'], res['timeStamp'], res['tag'] )
+                "INSERT INTO logs(manufacturerDataHex, mac, rssi, tagtype) VALUES (?,?,?,?)",
+                (res['manufacturerDataHex'] , res['macAddress'], res['rssi'], res['tagtype'] )
             )
 
 
@@ -127,21 +127,22 @@ class BLERelay( DefaultDelegate):
             try: 
                 # Scan for scan_time. Then scan again 
                 DBG("Start scanning", logLevel=LogLevel.DEBUG)
-                scan_time = 1.0
+                scan_time = 10.0
                 devices = self.scanner.scan(scan_time, passive=False)
                 connectable_devices = [dev for dev in devices if dev.connectable and not next((d for d in self.connected_peripherals if d == dev.addr), None)]
                 DBG("Scan finished. Discovered {} devices".format(len(devices)))
 
                 # Connect on a different thread 
-                if self.autoconnect and len(connectable_devices) > 0: 
-                    DBG("Connecting to device", logLevel=LogLevel.DEBUG)
-                    # Connect to one device and read info before performing a scan again 
-                    self.connected_scan_entry = connectable_devices[0]
-                    self.read_info_from_ble_device(self.connected_scan_entry)
-                elif len(connectable_devices) == 0: 
-                    DBG("No connectable devices found", logLevel=LogLevel.DEBUG)
-                else: 
-                    DBG("Postponing connection. Already connecting", logLevel=LogLevel.DEBUG)
+                # We don't need to connect at this point
+                # if self.autoconnect and len(connectable_devices) > 0: 
+                #     DBG("Connecting to device", logLevel=LogLevel.DEBUG)
+                #     # Connect to one device and read info before performing a scan again 
+                #     self.connected_scan_entry = connectable_devices[0]
+                #     self.read_info_from_ble_device(self.connected_scan_entry)
+                # elif len(connectable_devices) == 0: 
+                #     DBG("No connectable devices found", logLevel=LogLevel.DEBUG)
+                # else: 
+                #     DBG("Postponing connection. Already connecting", logLevel=LogLevel.DEBUG)
 
             except Exception as e: 
                 DBG("Scan error", logLevel=LogLevel.ERR)
@@ -409,8 +410,16 @@ class BLERelay( DefaultDelegate):
         raw_data_hex = ""
         if scanEntry.rawData: 
             raw_data_hex = scanEntry.rawData.hex()
-
+        tagtype="other"
+        if scanEntry.getValueText(ScanEntry.MANUFACTURER) is not None:
+            if scanEntry.getValueText(ScanEntry.MANUFACTURER)[0:8]=="4c001219":
+                tagtype="apple"
+        
+        if scanEntry.getValueText(ScanEntry.COMPLETE_16B_SERVICES) is not None:
+            if scanEntry.getValueText(ScanEntry.COMPLETE_16B_SERVICES)[0:8]=="0000feed":
+                tagtype="tile"
         packet_content = {
+            "tagtype": tagtype,
             "manufacturerDataHex": scanEntry.getValueText(ScanEntry.MANUFACTURER), 
             "macAddress": scanEntry.addr, 
             "rssi": scanEntry.rssi,
@@ -592,12 +601,13 @@ def syncMain():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Relay BLE advertisements to network services")
     parser.add_argument("-a", dest="async_run", action='store_const', const=True, default=False, help="Pass -a to run asynchronous (useful for when running at startup)")
-    parser.add_argument("-s", dest="scan_only", action='store_const', const=True, default=False, help="Pass -s to scan only without forwarding data")
+    #parser.add_argument("-s", dest="scan_only", action='store_const', const=True, default=False, help="Pass -s to scan only without forwarding data")
     args = parser.parse_args()
 
-    if args.scan_only:
-        relay = BLERelay()
-        relay.start_ble_scanning()
+    #lets make it always scan
+    #if args.scan_only:
+    relay = BLERelay()
+    relay.start_ble_scanning()
 
     if args.async_run: 
         asyncio.run(main())
